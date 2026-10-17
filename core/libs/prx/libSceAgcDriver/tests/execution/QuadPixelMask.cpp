@@ -3,7 +3,6 @@
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "Recompiler.hpp"
 #include "VulkanTestDevice.hpp"
-#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -25,7 +24,6 @@ constexpr std::uint32_t TextureLevels = 9;
 constexpr std::uint32_t SampledLevel = 2;
 constexpr std::uint32_t Format8888Unorm = 56;
 constexpr std::uint32_t Type2D = 9;
-constexpr std::uint32_t DemoteToHelperInvocation = 5379;
 alignas(256) std::array<std::byte, Width * Height * 4> Pixels{};
 alignas(4096) std::array<std::byte, 256u * 1024u> Texels{};
 alignas(256) std::array<std::array<float, 4>, 3> Triangle{{{-1.0f, -1.0f, 0.5f, 1.0f}, {3.0f, -1.0f, 0.5f, 1.0f}, {-1.0f, 3.0f, 0.5f, 1.0f}}};
@@ -161,26 +159,14 @@ int main() {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
-        const auto capabilities = device->Target().supportedCapabilities;
-        const bool demote = std::find(capabilities.begin(), capabilities.end(), DemoteToHelperInvocation) != capabilities.end();
         FillTexture();
         for (const std::uint8_t mask : {std::uint8_t{0xf}, std::uint8_t{0x2}, std::uint8_t{0x9}}) {
             Draw(*device, ConstantPixelCode, mask);
             Check("constant color", mask, {255u, 255u, 255u, 255u});
-            if (mask == 0xf || demote) {
-                Draw(*device, SampledPixelCode, mask);
-                Check("implicit-LOD sample", mask, LevelColor(SampledLevel));
-                continue;
-            }
-            try {
-                Draw(*device, SampledPixelCode, mask);
-            } catch (const std::exception& error) {
-                Require(std::string(error.what()).find("shaderDemoteToHelperInvocation") != std::string::npos, std::string("an implicit-LOD sample under a quad pixel mask failed for another reason: ") + error.what());
-                continue;
-            }
-            Require(false, "an implicit-LOD sample under quad pixel mask " + std::to_string(mask) + " was drawn without demote to helper invocation");
+            Draw(*device, SampledPixelCode, mask);
+            Check("implicit-LOD sample", mask, LevelColor(SampledLevel));
         }
-        std::printf("quad pixel mask tests passed (%s)\n", demote ? "demote to helper invocation" : "kill, derivatives refused");
+        std::puts("quad pixel mask tests passed");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

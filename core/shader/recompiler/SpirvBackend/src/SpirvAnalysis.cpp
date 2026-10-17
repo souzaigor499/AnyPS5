@@ -10,30 +10,6 @@ namespace ShaderRecompiler {
 
 namespace {
 
-bool ReadsNeighbourLanes(const IrProgram& program, const IrValue& inst) {
-    switch (inst.Opcode()) {
-    case IrOpcode::ImageQueryLod:
-    case IrOpcode::DppMoveU32:
-    case IrOpcode::DppUpdateU32:
-    case IrOpcode::SwizzleU32:
-    case IrOpcode::BpermuteU32:
-    case IrOpcode::PermuteU32:
-    case IrOpcode::Permlane16U32:
-    case IrOpcode::ReadLane:
-    case IrOpcode::ReadFirstLane:
-    case IrOpcode::Ballot:
-    case IrOpcode::WqmU64:
-        return true;
-    case IrOpcode::ImageSampleImplicitLod:
-    case IrOpcode::ImageSampleRaw: {
-        const auto flags = program.Resources().memoryInfo.at(inst.Flags<MemoryFlags>().index).imageSampleFlags;
-        return (flags & (RdnaImageSampleFlagDerivative | RdnaImageSampleFlagLod | RdnaImageSampleFlagLevelZero)) == 0u;
-    }
-    default:
-        return false;
-    }
-}
-
 bool UniformSource(const IrValue& value) {
     switch (value.Opcode()) {
     case IrOpcode::Ballot:
@@ -402,7 +378,6 @@ SpirvRequirements AnalyzeProgramRequirements(const IrProgram& program) {
                     requirements.subgroupLocalInvocationId = true;
                 }
             }
-            requirements.neighbourLaneReads = requirements.neighbourLaneReads || ReadsNeighbourLanes(program, *inst);
             switch (inst->Opcode()) {
             case IrOpcode::Ballot:
                 requirements.subgroupBallot = true;

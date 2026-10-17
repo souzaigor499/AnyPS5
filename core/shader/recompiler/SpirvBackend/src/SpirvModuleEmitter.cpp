@@ -1212,32 +1212,14 @@ void EmitProgram(SpirvEmitterState& state) {
             bit = EmitBinaryU32(state, spv::OpBitwiseAnd, Unary(state, spv::OpBitcast, TypeU32(state), rasterized), covered);
             state.quadSampleCoverage = Unary(state, spv::OpBitcast, TypeI32(state), covered);
         }
-        const auto mask = static_cast<std::uint32_t>(pixel.quadPixelMask);
-        const bool demoteCapability = std::find(state.supportedCapabilities.begin(), state.supportedCapabilities.end(), static_cast<std::uint32_t>(spv::CapabilityDemoteToHelperInvocation)) != state.supportedCapabilities.end();
-        const bool demoteCore = state.spirvVersion >= 0x00010600u;
-        const bool demoteExtension = std::find(state.supportedExtensions.begin(), state.supportedExtensions.end(), "SPV_EXT_demote_to_helper_invocation") != state.supportedExtensions.end();
-        const bool demote = demoteCapability && (demoteCore || demoteExtension);
-        if (!demote && state.requirements.neighbourLaneReads) {
-            throw std::runtime_error("the PA_SC_AA_MASK quad pixel mask " + std::to_string(mask) + " leaves helper pixels whose lanes the pixel program reads (implicit-LOD sampling, whole-quad mode or cross-lane reads), which needs the device's shaderDemoteToHelperInvocation");
-        }
         const auto uncovered = state.module.AllocateId();
         state.module.AddFunction(spv::OpIEqual, TypeBool(state), uncovered, bit, ConstantU32(state, 0u));
         state.quadPixelUncovered = uncovered;
-        const auto killLabel = state.module.AllocateId();
-        const auto mergeLabel = state.module.AllocateId();
-        state.module.AddFunction(spv::OpSelectionMerge, mergeLabel, spv::SelectionControlMaskNone);
-        state.module.AddFunction(spv::OpBranchConditional, uncovered, killLabel, mergeLabel);
-        EmitLabel(state, killLabel);
-        if (demote) {
-            state.module.EmitCapability(spv::CapabilityDemoteToHelperInvocation);
-            if (!demoteCore) state.module.EmitExtension("SPV_EXT_demote_to_helper_invocation");
-            state.module.AddFunction(spv::OpDemoteToHelperInvocation);
-            state.module.AddFunction(spv::OpBranch, mergeLabel);
-        } else {
-            state.module.AddFunction(spv::OpKill);
+        if (pixel.quadPixelMask != 0xfu) {
+            const auto pixelCoverage = Select(state, TypeI32(state), uncovered, ConstantI32(state, 0), ConstantI32(state, -1));
+            state.quadSampleCoverage = state.quadSampleCoverage != 0u ? Binary(state, spv::OpBitwiseAnd, TypeI32(state), state.quadSampleCoverage, pixelCoverage) : pixelCoverage;
         }
-        EmitLabel(state, mergeLabel);
-        if (state.quadSampleCoverage != 0u) StoreCoverage(state, ConstantI32(state, -1));
+        StoreCoverage(state, ConstantI32(state, -1));
     }
     if (program.BlockOrder().empty()) {
         if (OrderedPixelShader(state)) {
@@ -1248,10 +1230,14 @@ void EmitProgram(SpirvEmitterState& state) {
             const auto active = state.module.AllocateId();
             state.module.AddFunction(spv::OpLoad, TypeU32(state), maskValue, state.pixelValidMaskVariable);
             state.module.AddFunction(spv::OpINotEqual, TypeBool(state), active, maskValue, ConstantU32(state, 0u));
+            auto keep = active;
+            if (state.quadPixelUncovered != 0u) {
+                keep = Binary(state, spv::OpLogicalOr, TypeBool(state), active, state.quadPixelUncovered);
+            }
             const auto inactive = state.module.AllocateId();
             const auto killLabel = state.module.AllocateId();
             const auto mergeLabel = state.module.AllocateId();
-            state.module.AddFunction(spv::OpLogicalNot, TypeBool(state), inactive, active);
+            state.module.AddFunction(spv::OpLogicalNot, TypeBool(state), inactive, keep);
             state.module.AddFunction(spv::OpSelectionMerge, mergeLabel, spv::SelectionControlMaskNone);
             state.module.AddFunction(spv::OpBranchConditional, inactive, killLabel, mergeLabel);
             EmitLabel(state, killLabel);

@@ -5109,28 +5109,57 @@ void verifyQuadMaskNeighbourReads() {
         request.useCache = false;
         return Recompile(request);
     };
-    const auto declares = [](const RecompileResult& result, spv::Op opcode) {
+    const auto occurrences = [](const RecompileResult& result, spv::Op opcode) {
         const auto& words = result.spirv.Words();
+        std::size_t found = 0;
         for (std::size_t cursor = 5; cursor < words.size();) {
             const auto count = words[cursor] >> 16u;
             require(count != 0 && count <= words.size() - cursor, "quad mask: truncated SPIR-V instruction");
-            if ((words[cursor] & 0xffffu) == static_cast<std::uint32_t>(opcode)) return true;
+            if ((words[cursor] & 0xffffu) == static_cast<std::uint32_t>(opcode)) ++found;
+            cursor += count;
+        }
+        return found;
+    };
+    const auto declares = [&](const RecompileResult& result, spv::Op opcode) { return occurrences(result, opcode) != 0; };
+    const auto writesSampleMask = [&](const RecompileResult& result) {
+        const auto& words = result.spirv.Words();
+        std::uint32_t sampleMask = 0u;
+        for (std::size_t cursor = 5; cursor < words.size();) {
+            const auto count = words[cursor] >> 16u;
+            require(count != 0 && count <= words.size() - cursor, "quad mask: truncated SPIR-V instruction");
+            if ((words[cursor] & 0xffffu) == static_cast<std::uint32_t>(spv::OpDecorate) && count == 4u && words[cursor + 2] == static_cast<std::uint32_t>(spv::DecorationBuiltIn) && words[cursor + 3] == static_cast<std::uint32_t>(spv::BuiltInSampleMask)) sampleMask = words[cursor + 1];
+            cursor += count;
+        }
+        if (sampleMask == 0u) return false;
+        std::uint32_t pointer = 0u;
+        for (std::size_t cursor = 5; cursor < words.size();) {
+            const auto count = words[cursor] >> 16u;
+            if ((words[cursor] & 0xffffu) == static_cast<std::uint32_t>(spv::OpAccessChain) && count >= 4u && words[cursor + 3] == sampleMask) pointer = words[cursor + 2];
+            if ((words[cursor] & 0xffffu) == static_cast<std::uint32_t>(spv::OpStore) && count >= 3u && pointer != 0u && words[cursor + 1] == pointer) return true;
             cursor += count;
         }
         return false;
     };
-    require(declares(compile(constant, true, false), spv::OpKill), "a quad mask without neighbour reads did not retain its kill fallback");
+    const auto coversByMask = [&](const RecompileResult& masked, const RecompileResult& unmasked, const char* what) {
+        const auto uncovered = std::string("a quad mask did not clear the uncovered pixels' sample coverage: ") + what;
+        require(writesSampleMask(masked) && !writesSampleMask(unmasked), uncovered.c_str());
+        const auto killed = std::string("a quad mask killed or demoted its uncovered pixels: ") + what;
+        require(occurrences(masked, spv::OpKill) == occurrences(unmasked, spv::OpKill) && !declares(masked, spv::OpDemoteToHelperInvocation) && !declares(masked, spv::OpTerminateInvocation), killed.c_str());
+    };
+    coversByMask(compile(constant, true, false), compile(constant, false, false), "constant color");
     for (const auto code : {std::span<const std::uint32_t>(explicitExec), std::span<const std::uint32_t>(constantWqm), std::span<const std::uint32_t>(permute)}) {
         const auto unmasked = compile(code, false, false);
         require(declares(unmasked, spv::OpGroupNonUniformShuffle), "the neighbour-read test did not retain its cross-lane shuffle");
-        expectFailure([&] { static_cast<void>(compile(code, true, false)); }, "shaderDemoteToHelperInvocation", "a quad mask killed helper lanes before a cross-lane read with EXEC enabled for those lanes");
-        const auto masked = compile(code, true, true);
-        require(declares(masked, spv::OpDemoteToHelperInvocation) && declares(masked, spv::OpGroupNonUniformShuffle), "a quad mask with demote did not preserve its cross-lane shuffle path");
+        const auto masked = compile(code, true, false);
+        coversByMask(masked, unmasked, "cross-lane read without demote");
+        require(declares(masked, spv::OpGroupNonUniformShuffle), "a quad mask did not preserve its cross-lane shuffle path");
+        coversByMask(compile(code, true, true), unmasked, "cross-lane read with demote available");
     }
-    require(declares(compile(comparisonBallot, false, false), spv::OpGroupNonUniformBallot), "the comparison test did not retain its subgroup ballot");
-    expectFailure([&] { static_cast<void>(compile(comparisonBallot, true, false)); }, "shaderDemoteToHelperInvocation", "a quad mask killed helper lanes before a ballot with EXEC enabled for those lanes");
-    const auto maskedBallot = compile(comparisonBallot, true, true);
-    require(declares(maskedBallot, spv::OpDemoteToHelperInvocation) && declares(maskedBallot, spv::OpGroupNonUniformBallot), "a quad mask with demote did not preserve its ballot path");
+    const auto unmaskedBallot = compile(comparisonBallot, false, false);
+    require(declares(unmaskedBallot, spv::OpGroupNonUniformBallot), "the comparison test did not retain its subgroup ballot");
+    const auto maskedBallot = compile(comparisonBallot, true, false);
+    coversByMask(maskedBallot, unmaskedBallot, "ballot");
+    require(declares(maskedBallot, spv::OpGroupNonUniformBallot), "a quad mask did not preserve its ballot path");
 }
 
 void verifyCubeDepthCompareMode() {

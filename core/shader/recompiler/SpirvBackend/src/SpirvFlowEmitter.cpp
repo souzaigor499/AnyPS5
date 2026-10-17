@@ -41,6 +41,9 @@ void EmitKillIfPixelValidMaskInactive(SpirvEmitterState& state) {
         state.module.AddFunction(spv::OpLoad, TypeBool(state), helper, helperVariable);
         keep = Binary(state, spv::OpLogicalOr, TypeBool(state), active, helper);
     }
+    if (state.quadPixelUncovered != 0u) {
+        keep = Binary(state, spv::OpLogicalOr, TypeBool(state), keep, state.quadPixelUncovered);
+    }
     EmitKillIfBoolFalse(state, keep);
 }
 
