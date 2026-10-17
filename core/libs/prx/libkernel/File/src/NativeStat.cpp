@@ -34,8 +34,9 @@ static std::uint32_t FoldFileIndex(const BY_HANDLE_FILE_INFORMATION& identity) {
     return folded == 0 ? 1 : folded;
 }
 static int DoStat(const std::filesystem::path& p, NativeStat* st) {
-    if (_wstat64(p.c_str(), st) != 0) return -1;
-    const auto handle = CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    const auto native = File::LongHostPath(p);
+    if (_wstat64(native.c_str(), st) != 0) return -1;
+    const auto handle = CreateFileW(native.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return File::WindowsFileTime::Failure(GetLastError());
     const int result = ReadHandleInfo(handle, st);
@@ -48,12 +49,13 @@ static int DoFstat(int fd, NativeStat* st) {
     return ReadHandleInfo(reinterpret_cast<HANDLE>(::_get_osfhandle(fd)), st);
 }
 static int DoLstat(const std::filesystem::path& p, NativeStat* st) {
-    const auto attributes = GetFileAttributesW(p.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return DoStat(p, st);
+    const auto native = File::LongHostPath(p);
+    const auto attributes = GetFileAttributesW(native.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return DoStat(native, st);
     std::string target;
-    if (!File::WindowsSymbolicLink::ReadRelative(p, target, "lstat"))
+    if (!File::WindowsSymbolicLink::ReadRelative(native, target, "lstat"))
         NotImplemented_nid_no_patch("lstat of a Windows reparse point other than a relative symbolic link");
-    const auto handle = CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    const auto handle = CreateFileW(native.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return File::WindowsFileTime::Failure(GetLastError());
     const int result = ReadHandleInfo(handle, st);
@@ -169,6 +171,19 @@ bool FillLinkStat(const std::filesystem::path& nativePath, FileStat* sb) {
     if (DoLstat(nativePath, &st) != 0) return false;
     CopyNativeStat(st, sb);
     return true;
+}
+
+std::filesystem::path LongHostPath(const std::filesystem::path& nativePath) {
+#ifdef _WIN32
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(nativePath, error);
+    if (error) return nativePath;
+    const auto spelling = absolute.lexically_normal().make_preferred().native();
+    if (spelling.size() < MAX_PATH || spelling.starts_with(L"\\\\?\\") || spelling.starts_with(L"\\\\.\\")) return nativePath;
+    return spelling.starts_with(L"\\\\") ? L"\\\\?\\UNC\\" + spelling.substr(2) : L"\\\\?\\" + spelling;
+#else
+    return nativePath;
+#endif
 }
 
 }
